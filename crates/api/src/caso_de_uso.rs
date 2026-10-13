@@ -223,13 +223,26 @@ impl ConsultaDeHoraLegal {
         self.servir_degradado(agora, sintoma)
     }
 
-    /// Tenta as fontes em ordem; a primeira amostra boa encerra a busca.
+    /// Consulta as fontes e devolve a primeira amostra boa.
+    ///
+    /// ## Estrategia: cache primeiro, depois sondagem **concorrente**
+    ///
+    /// 1. Percorre as fontes sem tocar a rede: uma calibracao fresca e real
+    ///    encerra a busca; fonte com disjuntor aberto e' pulada.
+    /// 2. As demais sao sondadas **ao mesmo tempo** (`JoinSet` do Tokio); a
+    ///    primeira amostra valida vence e as outras sao abortadas. Com N
+    ///    fontes, o pior caso deixa de ser `N x prazo_por_fonte` e passa a ser
+    ///    `prazo_por_fonte`, e uma fonte lenta ou fora nao atrasa as demais.
+    ///
+    /// **Pos-condicao:** em `Ok`, as sondagens ainda em voo foram abortadas
+    /// (nenhuma task fica pendurada depois da resposta).
     async fn tentar_fontes(
         &self,
         agora: InstanteUtc,
         janela: Duration,
     ) -> Result<ResultadoDeConsulta, String> {
         let mut ultimo_sintoma = "nenhuma fonte tentada".to_owned();
+        let mut a_sondar: Vec<Arc<dyn FonteDeTempo>> = Vec::new();
 
         for fonte in &self.fontes {
             match fonte.decidir(agora, janela) {
@@ -238,17 +251,28 @@ impl ConsultaDeHoraLegal {
                 }
                 DecisaoDeConsulta::FonteIndisponivel { calibra_em } => {
                     ultimo_sintoma = format!("fonte indisponivel (calibracao de {calibra_em:?})");
-                    continue;
                 }
-                DecisaoDeConsulta::Sondar { .. } => {}
+                DecisaoDeConsulta::Sondar { .. } => a_sondar.push(Arc::clone(fonte)),
             }
-            match fonte.sondar(agora).await {
-                Ok(amostra) => {
+        }
+
+        let mut tarefas = tokio::task::JoinSet::new();
+        for fonte in a_sondar {
+            tarefas.spawn(async move {
+                let resultado = fonte.sondar(agora).await;
+                (fonte, resultado)
+            });
+        }
+
+        while let Some(juncao) = tarefas.join_next().await {
+            match juncao {
+                Ok((fonte, Ok(amostra))) => {
+                    tarefas.abort_all();
                     return self
                         .resultado_de_amostra(fonte.nome(), amostra, agora)
                         .map_err(|e| e.to_string());
                 }
-                Err(e) => {
+                Ok((fonte, Err(e))) => {
                     ultimo_sintoma = e.to_string();
                     tracing::warn!(
                         fonte = fonte.nome(),
@@ -256,6 +280,10 @@ impl ConsultaDeHoraLegal {
                         retentavel = e.vale_retentativa(),
                         "sondagem falhou"
                     );
+                }
+                Err(erro) => {
+                    ultimo_sintoma = format!("tarefa de sondagem interrompida: {erro}");
+                    tracing::error!(%erro, "tarefa de sondagem terminou de forma anormal");
                 }
             }
         }
@@ -401,6 +429,7 @@ mod testes {
         nome: String,
         calibracao: Calibracao,
         falha: Option<ErroDeSondagem>,
+        atraso: Duration,
     }
 
     impl FonteDeTempo for FonteDeTeste {
@@ -430,6 +459,7 @@ mod testes {
             Box<dyn std::future::Future<Output = Result<AmostraDeTempo, ErroDeSondagem>> + Send + '_>,
         > {
             Box::pin(async move {
+                tokio::time::sleep(self.atraso).await;
                 match &self.falha {
                     Some(e) => Err(e.clone()),
                     None => Ok(amostra_de_teste()),
@@ -456,6 +486,16 @@ mod testes {
                 nome: nome.to_owned(),
                 calibracao,
                 falha,
+                atraso: Duration::ZERO,
+            })
+        }
+
+        fn lenta(nome: &str, calibracao: Calibracao, atraso: Duration) -> Arc<Self> {
+            Arc::new(Self {
+                nome: nome.to_owned(),
+                calibracao,
+                falha: None,
+                atraso,
             })
         }
     }
@@ -551,6 +591,40 @@ mod testes {
 
         assert_eq!(r.fonte, "a.ntp.br", "veio da sondagem, nao do cache inventado");
         assert!(!r.degradado);
+    }
+
+    #[tokio::test]
+    async fn a_fonte_rapida_vence_a_lenta_e_o_pior_caso_nao_soma_os_prazos() {
+        let agora = InstanteUtc::epoch().mais(Duration::from_secs(600));
+        let relogio = Arc::new(RelogioManual::fixo(agora));
+        let sem = Calibracao::sem_medida(agora);
+        let lenta = FonteDeTeste::lenta("lenta.ntp.br", sem.clone(), Duration::from_millis(400));
+        let rapida = FonteDeTeste::lenta("rapida.ntp.br", sem, Duration::from_millis(5));
+        let caso = ConsultaDeHoraLegal::de_fontes(vec![lenta, rapida], politica_de_teste(), relogio);
+
+        let inicio = std::time::Instant::now();
+        let r = caso.executar().await.expect("ao menos uma fonte responde");
+
+        assert_eq!(r.fonte, "rapida.ntp.br", "a primeira amostra valida vence");
+        assert!(
+            inicio.elapsed() < Duration::from_millis(300),
+            "sondagem concorrente: nao espera a fonte lenta ({:?})",
+            inicio.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn fonte_fora_nao_impede_a_que_responde() {
+        let agora = InstanteUtc::epoch().mais(Duration::from_secs(600));
+        let relogio = Arc::new(RelogioManual::fixo(agora));
+        let sem = Calibracao::sem_medida(agora);
+        let fora = FonteDeTeste::nova("fora.ntp.br", sem.clone(), Some(ErroDeSondagem::Rede("sem rota".into())));
+        let boa = FonteDeTeste::lenta("boa.ntp.br", sem, Duration::from_millis(20));
+        let caso = ConsultaDeHoraLegal::de_fontes(vec![fora, boa], politica_de_teste(), relogio);
+
+        let r = caso.executar().await.expect("a fonte boa responde");
+
+        assert_eq!(r.fonte, "boa.ntp.br");
     }
 
     #[tokio::test]

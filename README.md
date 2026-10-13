@@ -12,8 +12,8 @@ crates/servidor  binário
 
 ## Estado
 
-Verificado em 2026-10-12: `cargo build --workspace` compila e `cargo test --workspace` passa (**163 testes**: 95 de
-domínio, 50 de API, 18 de NTP, incluindo sondagem real contra um servidor NTP de brinquedo no loopback). O servidor ainda
+Verificado em 2026-10-12: `cargo build --workspace` compila e `cargo test --workspace` passa (**167 testes**: 95 de
+domínio, 54 de API, 18 de NTP, incluindo sondagem real contra um servidor NTP de brinquedo no loopback). O servidor ainda
 **não foi exercitado contra o NTP.br de verdade**. Pendências: o `clippy` pedântico do projeto acusa ~40 achados antigos
 (o CI roda clippy sem bloquear até zerá-los) e falta teste de carga/caos.
 
@@ -22,6 +22,8 @@ domínio, 50 de API, 18 de NTP, incluindo sondagem real contra um servidor NTP d
 - **Fonte que não inicia não derruba o serviço**: é registrada e descartada; sem nenhuma fonte, a subida falha alto.
 - **Nada inventado é servido**: uma fonte nova nasce `sem_medida` (`Calibracao::sem_medida`) e só passa a servir cache
   depois de uma medição real. Antes disso, a decisão é sondar.
+- **Fontes em paralelo**: cache primeiro; as demais são sondadas ao mesmo tempo (`JoinSet` do Tokio), a primeira
+  amostra válida vence e as outras são abortadas. O pior caso é um `prazo_por_fonte`, não a soma.
 - **Prazo total** por consulta (`prazo_total` da política); estourou, cai no modo degradado.
 - **Modo degradado**: se nenhuma fonte responde, serve a hora corrigida pela melhor calibração **real**, com
   `degradado: true`, enquanto tiver até 15 min (`IDADE_MAXIMA_DEGRADADA`, escolha de engenharia: ~45 ms de deriva a
