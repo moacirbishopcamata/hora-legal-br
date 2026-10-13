@@ -409,7 +409,7 @@ fn componentes() -> Value {
             "Hora": {
                 "type": "object",
                 "description": "A hora, em todas as representacoes pedidas.",
-                "required": ["utc", "brasilia", "extenso", "formatos", "host"],
+                "required": ["utc", "brasilia", "local", "fuso_do_host", "extenso", "formatos", "host"],
                 "properties": {
                     "utc": {
                         "type": "string",
@@ -420,6 +420,16 @@ fn componentes() -> Value {
                         "type": "string",
                         "description": "Hora Legal Brasileira (UTC-3), derivada de `utc` -- nunca medida de novo.",
                         "example": "2026-10-09T14:03:22.123456789-03:00"
+                    },
+                    "local": {
+                        "type": "string",
+                        "description": "Mesma hora no fuso do host (offset real), derivada de `utc`.",
+                        "example": "2026-10-09T13:03:22.123456789-04:00"
+                    },
+                    "fuso_do_host": {
+                        "type": "string",
+                        "description": "Nome IANA do fuso do host, ou `UTC+hh:mm` quando o host nao informa.",
+                        "example": "America/Porto_Velho"
                     },
                     "extenso": {
                         "type": "string",

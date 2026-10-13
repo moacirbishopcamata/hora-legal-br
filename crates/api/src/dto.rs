@@ -55,6 +55,15 @@ pub struct RespostaDeHora {
     /// -- duas leituras do relogio poderiam discordar em um nanossegundo.
     pub brasilia: String,
 
+    /// Mesma hora no **fuso do host** (offset real, com horario de verao se o host o tiver).
+    ///
+    /// **Contrato:** sempre presente; derivada de `utc`, nunca medida de novo; o instante e'
+    /// exatamente o mesmo de `utc` e de `brasilia` -- muda so a apresentacao.
+    pub local: String,
+
+    /// Nome IANA do fuso do host (`America/Porto_Velho`), ou `UTC+hh:mm` quando o host nao informa.
+    pub fuso_do_host: String,
+
     /// Mesma hora em por extenso: `sexta-feira, 09/10/2026 17:03:22 UTC`.
     ///
     /// Para tela de operacao e log legivel, onde o cliente humano nao deveria
@@ -374,6 +383,36 @@ pub fn brasilia_de(instante: InstanteUtc) -> String {
     destino
 }
 
+/// A hora no fuso do **host**: `(RFC 3339 com offset, nome do fuso)`.
+///
+/// ## Por que existe ao lado de `brasilia_de`
+///
+/// A Hora Legal Brasileira e' UTC-3, mas o host pode estar em outro fuso civil
+/// (Rondonia e Amazonas: UTC-4; Acre: UTC-5), e quem le a tela ou o log quer a
+/// hora do **lugar onde esta**. Os dois convivem: `brasilia` e' a referencia
+/// legal, `local` e' a apresentacao.
+///
+/// **Pre-condicao:** `instante` dentro do intervalo que o `chrono` representa
+/// (anos +-262 mil). **Pos-condicao:** o instante devolvido e' o mesmo de
+/// `instante`, ao nanossegundo. Fora do intervalo ou sem fuso do host, devolve
+/// UTC (`Z`) e `UTC` -- degrada para a representacao sem ambiguidade.
+#[must_use]
+pub fn local_de(instante: InstanteUtc) -> (String, String) {
+    use chrono::{DateTime, Local, SecondsFormat, Utc};
+
+    let Some(utc) = DateTime::<Utc>::from_timestamp(
+        instante.segundos_desde_epoch(),
+        instante.nanos_do_segundo(),
+    ) else {
+        return (brasilia_de(instante), "UTC".to_owned());
+    };
+    let local = utc.with_timezone(&Local);
+    let rfc3339 = local.to_rfc3339_opts(SecondsFormat::Nanos, true);
+    let nome = iana_time_zone::get_timezone().unwrap_or_else(|_| format!("UTC{}", local.format("%:z")));
+
+    (rfc3339, nome)
+}
+
 /// Formatos servidos por perfil, resolvido uma vez.
 #[must_use]
 pub fn formatos_do_perfil(perfil: Formatos) -> &'static [Formato] {
@@ -459,6 +498,31 @@ mod testes {
         let a = FormatosResposta::de_formatos(lista, ref_in());
         let b = FormatosResposta::de_formatos(lista, ref_in());
         assert_eq!(a, b, "mesma entrada, mesmo mapa");
+    }
+
+    #[test]
+    fn hora_local_e_o_mesmo_instante_do_utc_no_fuso_do_host() {
+        let (local, fuso) = local_de(ref_in());
+        let lido = chrono::DateTime::parse_from_rfc3339(&local).expect("RFC 3339 valido");
+
+        assert_eq!(
+            lido.with_timezone(&chrono::Utc).to_rfc3339(),
+            chrono::DateTime::parse_from_rfc3339("2026-10-09T17:03:22.123456789Z")
+                .expect("referencia")
+                .to_rfc3339(),
+            "o instante nao pode mudar, so a apresentacao"
+        );
+        assert!(!fuso.is_empty(), "o fuso do host sempre tem nome");
+    }
+
+    #[test]
+    fn hora_local_traz_offset_explicito() {
+        let (local, _) = local_de(ref_in());
+
+        assert!(
+            local.ends_with('Z') || local.rfind(['+', '-']).is_some_and(|i| local[i..].contains(':')),
+            "fuso explicito: {local}"
+        );
     }
 
     #[test]

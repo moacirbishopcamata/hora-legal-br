@@ -50,7 +50,7 @@ use hora_legal_dominio::resiliencia::DecisaoDeConsulta;
 use crate::caso_de_uso::{ConsultaDeHoraLegal, ResultadoDeConsulta};
 use crate::dto::{
     FormatosResposta, RespostaDeFonte, RespostaDeHora, RespostaDeHost, RespostaDeSaude,
-    RespostaDeVersao, brasilia_de, nome_do_perfil,
+    RespostaDeVersao, brasilia_de, local_de, nome_do_perfil,
 };
 use crate::erro_http::{
     ErroDeResposta, gerar_correlacao, traduzir_erro_de_consulta,
@@ -459,9 +459,12 @@ fn resposta_de_hora(
     let mut extenso = String::new();
     let _ = civil_utc.escrever_extenso_pt_br(&mut extenso);
 
+    let (local, fuso_do_host) = local_de(resultado.instante);
     let dto = RespostaDeHora {
         utc,
         brasilia: brasilia_de(resultado.instante),
+        local,
+        fuso_do_host,
         extenso,
         formatos: FormatosResposta::de_formatos(formatos, resultado.instante),
         host: RespostaDeHost::de_instante(resultado.instante, estado.escala),

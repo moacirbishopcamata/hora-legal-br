@@ -27,6 +27,9 @@ hora-legal-dominio = { path = "crates/dominio", version = "1.0.0" }
 hora-legal-ntp = { path = "crates/ntp", version = "1.0.0" }
 hora-legal-api = { path = "crates/api", version = "1.0.0" }
 tokio-util = { version = "0.7", features = ["rt"] }
+# Fuso do HOST (offset real, com horario de verao se existir). Fica so na borda (api): o dominio segue sem dependencias.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+iana-time-zone = "0.1"
 
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "signal"] }
 axum = "0.8"
