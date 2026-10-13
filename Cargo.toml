@@ -1,0 +1,127 @@
+[workspace]
+resolver = "2"
+members = ["crates/dominio", "crates/ntp", "crates/api", "crates/servidor"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+authors = ["Hora Legal Brasil <contato@horalegal.br>"]
+repository = "https://github.com/horalegalbr/hora-legal-br"
+description = "API RESTful de Hora Legal Brasileira sincronizada com o NTP.br do Observatorio Nacional"
+
+# --- Perfil de release: latencia e o primeiro requisito nao funcional. ---
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[profile.release.package."*"]
+opt-level = 3
+
+[workspace.dependencies]
+hora-legal-dominio = { path = "crates/dominio", version = "1.0.0" }
+hora-legal-ntp = { path = "crates/ntp", version = "1.0.0" }
+hora-legal-api = { path = "crates/api", version = "1.0.0" }
+tokio-util = { version = "0.7", features = ["rt"] }
+
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros"] }
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "timeout", "cors", "limit", "compression-gzip", "catch-panic", "util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+utoipa-swagger-ui = { version = "9", default-features = false, features = ["axum", "vendored"] }
+http-body-util = "0.1"
+
+# ---------------------------------------------------------------------------
+# Portoes de qualidade. `all` e' negado; `pedantic' e' negado. As concessoes
+# abaixo sao decisoes documentadas, nao silencio.
+# ---------------------------------------------------------------------------
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+
+# Justificativa semantica de cada concessao:
+#
+# match_bool
+#   -> `match x { true => .., false => .. }` e' mais explicito que
+#      `if x { .. } else { .. }` quando os dois ramos sao estados
+#      **distintos** do dominio (correcao de desvio, invariante furada,
+#      qualidade de fonte). O `if` esconde que existe um segundo estado
+#      possivel; o `match` o nomeia. Concessao deliberada do projeto --
+#      ver `AmostraDeTempo::corrigir`, onde os dois ramos sao "somar o
+#      desvio" e "subtrair o desvio": consequencias distintas, nao Variations.
+#
+# cast_possible_truncation / cast_sign_loss / cast_possible_wrap
+# cast_precision_loss
+#   -> Este codigo e' majoritariamente **aritmetica de tempo**. As conversoes
+#      sao estreitas e provadas pelo tipo de origem (32 bits -> u8 em dia do
+#      mes, fracao NTP -> nanossegundos, `u64` de segundos -> `i64`), e cada
+#      uma tem a faixa escrita na linha. Onde a faixa NAO e' garantida, o
+#      codigo usa `try_into` ou `checked_*` -- ver `InstanteUtc::nanos_totais`
+#      e `InstanteUtc::para_segundos_ntp`. Permitir no linter significaria
+#      `#[allow]` em ~40 linhas, que e' o mesmo que nao permitir.
+#
+# too_many_lines
+#   -> `Formato::escrever` tem um ramo por formato (22 formatos). Cada ramo e'
+#      de 3 a 5 linhas e **auto-explicativo**; quebrar em 22 funcoes privadas
+#      espalharia um `match` legivel por um call-graph. A alternativa
+#      (tabela de funcoes) esconderia o `match` atras de um vetor.
+#
+# missing_errors_doc / missing_panics_doc
+#   -> As pre-condicoes, pos-condicoes e invariantes JA sao a documentacao
+#      (DbC). Um bloco `# Errors' repetindo "falha se invocado fora do prazo"
+#      seria a mesma informacao duas vezes, em lugares diferentes, onde uma
+#      envelhece e a outra nao.
+# module_name_repetitions
+#   -> `ErroDeContrato` dentro de `contrato` e `ErroDeDominio` dentro de `erro`:
+#      o prefixo carrega significado (de qual camada veio). Rust exige o
+#      prefixo; a alternativa seria nome generico sem informacao.
+# must_use_candidate
+#   -> Um getter puro virar `#[must_use]` gera warning em ponto de chamada que
+#      deliberadamente descarta o valor (ex.: `let _ = self.atraso();`).
+# cast_* (truncamento/assinatura/precisao/embrulho)
+#   -> Concessao NAO global: e' concedida arquivo a arquivo, apenas no codec de
+#      fio, onde a largura e' provada pelo proprio tipo (ver `ntp/src/pacote.rs`).
+#      Fora do codec nao existe `as`.
+# indexing_slicing
+#   -> Indices em tabelas de tamanho constante (`DIAS_*`, `MESES_*`) sao
+#      mascarados (`& MASCARA_DE_DIA`, `& MASCARA_DE_MES`) ou vem de um
+#      `match` com faixa exata. Trocar por `.get()` devolveria `Option` e
+#      forcaria o chamador a tratar um caso que a mascara ja torna
+#      impossivel -- trocando um `panic!` improvavel por tratamento do
+#      impossivel. Onde o indice **nao** e' provado, o codigo usa `get`:
+#      ver `PacoteNtp::decodificar` e `InstanteUtc::nanos_totais`.
+#
+# cast_lossless
+#   -> `u32 as u64` e `i64 as i128` sao perda de tempo: `From` existe e o
+#      compilador sugere. Nos casos remanescentes, `From` foi preferido.
+missing_errors_doc = "allow"
+indexing_slicing = "allow"
+cast_lossless = "allow"
+match_bool = "allow"
+too_many_lines = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+
+# Estas tres sao a negacao direta do DbC em runtime. Uma violacao de pre-
+# condicao precisa ser um `Result`; uma de pos-condicao precisa ser barulhenta.
+# O `panic!' do DbC vive isolado em `dominio::contrato`, com `allow` local e
+# justificado -- nao e' silencio global, e' um unico ponto de auditoria.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

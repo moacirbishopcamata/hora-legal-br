@@ -1,0 +1,15 @@
+[package]
+name = "hora-legal-dominio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Nucleo de dominio puro (sem I/O, sem dependencias) da Hora Legal Brasileira"
+repository.workspace = true
+
+# Prova de que o dominio nao arrastou nada: nenhuma dependencia. Nem tokio, nem serde, nem chrono.
+[dependencies]
+
+[lints]
+workspace = true

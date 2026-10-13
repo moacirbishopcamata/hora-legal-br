@@ -1,0 +1,21 @@
+[package]
+name = "hora-legal-ntp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Adaptador de saida: sondagem NTP/SNTP sobre UDP para o NTP.br"
+repository.workspace = true
+
+[dependencies]
+hora-legal-dominio.workspace = true
+# O adaptador NTP implementa `FonteDeTempo`, que vive na camada de caso de uso.
+# Essa e' a unica dependencia "para cima" do workspace, e e' interface, nao
+# implementacao -- e' o que mantem a inversao de dependencia.
+hora-legal-api.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[lints]
+workspace = true

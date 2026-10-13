@@ -1,0 +1,34 @@
+[package]
+name = "hora-legal-servidor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Binario do servidor: composicao de dependencias (raiz)"
+repository.workspace = true
+build = "build.rs"
+
+
+[[bin]]
+name = "hora-legal"
+path = "src/main.rs"
+
+
+[dependencies]
+hora-legal-dominio.workspace = true
+hora-legal-ntp.workspace = true
+hora-legal-api.workspace = true
+tokio.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# Swagger UI com os assets **embutidos** no binario (feature `vendored`).
+# Sem ela, a UI busca JS/CSS de CDN -- e um servidor de hora que depende de
+# rede de terceiro para mostrar a propria documentacao seria incoerente.
+utoipa-swagger-ui = { workspace = true }
+
+
+[lints]
+workspace = true

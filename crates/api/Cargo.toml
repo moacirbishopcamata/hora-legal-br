@@ -1,0 +1,25 @@
+[package]
+name = "hora-legal-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Adaptador de entrada: API REST versionada sob /api/v1"
+repository.workspace = true
+
+[dependencies]
+hora-legal-dominio.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tower.workspace = true
+http-body-util.workspace = true
+
+[lints]
+workspace = true
