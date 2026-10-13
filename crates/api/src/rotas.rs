@@ -35,7 +35,7 @@
 use std::sync::{Arc, OnceLock};
 
 use axum::extract::{Query, State};
-use axum::http::{HeaderValue, StatusCode, header};
+use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -53,7 +53,7 @@ use crate::dto::{
     RespostaDeVersao, brasilia_de, nome_do_perfil,
 };
 use crate::erro_http::{
-    ErroDeResposta, cabecalho_de_correlacao, gerar_correlacao, traduzir_erro_de_consulta,
+    ErroDeResposta, gerar_correlacao, traduzir_erro_de_consulta,
 };
 use crate::openapi;
 
@@ -93,24 +93,6 @@ pub struct IdentidadeDoBuild {
     pub data: &'static str,
     /// Ramo atual.
     pub ramo: &'static str,
-}
-
-impl IdentidadeDoBuild {
-    /// Identidade do binario em execucao, lida das variaveis do `build.rs`.
-    ///
-    /// **Total:** nunca falha. `build.rs` garante que toda variavel exista
-    /// (com `desconhecido` como fallback), e um valor ausente aqui viraria um
-    /// `404` de panic em producao.
-    #[must_use]
-    pub const fn do_binario() -> Self {
-        Self {
-            versao: env!("HORA_LEGAL_VERSAO_SEMANTICA"),
-            commit: env!("HORA_LEGAL_PRINCIPAL_CURTO"),
-            build: env!("HORA_LEGAL_NUMERO_DO_BUILD"),
-            data: env!("HORA_LEGAL_DATA_DO_COMMIT"),
-            ramo: env!("HORA_LEGAL_RAMO"),
-        }
-    }
 }
 
 /// Estado compartilhado por todas as rotas.
@@ -173,7 +155,7 @@ pub fn construir_roteador(configuracao: ConfiguracaoDeHttp) -> Router {
         .merge(openapi::rotas_de_documentacao())
         .layer(axum::Extension(estado.clone()))
         .layer(tower_http::catch_panic::CatchPanicLayer::new())
-        .layer(tower_http::timeout::TimeoutLayer::new(
+        .layer(tower_http::timeout::TimeoutLayer::with_status_code(axum::http::StatusCode::SERVICE_UNAVAILABLE, 
             std::time::Duration::from_millis(750),
         ))
         .layer(tower_http::trace::TraceLayer::new_for_http())
@@ -526,9 +508,9 @@ fn com_cabecalhos(
     agora: InstanteUtc,
 ) -> Response {
     let cabecalhos = resposta.headers_mut();
-    inserir(cabecalhos, CABECALHO_DA_VERSAO, estado.identidade.versao);
+    inserir(cabecalhos, HeaderName::from_static(CABECALHO_DA_VERSAO), estado.identidade.versao);
     inserir(cabecalhos, header::DATE, cabecalho_date(agora).as_str());
-    inserir(cabecalhos, CABECALHO_DA_CORRELACAO, correlacao);
+    inserir(cabecalhos, HeaderName::from_static(CABECALHO_DA_CORRELACAO), correlacao);
     resposta
 }
 
@@ -582,7 +564,7 @@ impl IntoResponse for RespostaDeErro {
 
         let mut resposta = (status, Json(problema)).into_response();
         let cabecalhos = resposta.headers_mut();
-        inserir(cabecalhos, CABECALHO_DA_CORRELACAO, &self.correlacao);
+        inserir(cabecalhos, HeaderName::from_static(CABECALHO_DA_CORRELACAO), &self.correlacao);
         inserir(cabecalhos, header::DATE, self.cabecalho_date.as_str());
 
         // `Retry-After` em segundos -- a RFC 9110 tambem aceita um HTTP-date,

@@ -65,7 +65,7 @@ pub enum IndicadorDeSincronismo {
     /// `LI = 0`: sem restrição.
     SemRestricao,
     /// `LI = 1`: o relogio e' secondary (referenciado por outro servidor).
-    Segundario,
+    Secundario,
     /// `LI = 2`: deletado pelo administrador (NTPv3).
     Deletado,
     /// `LI = 3`: nao sincronizado.
@@ -82,7 +82,7 @@ impl IndicadorDeSincronismo {
             0 => Self::SemRestricao,
             1 => Self::Secundario,
             2 => Self::Deletado,
-            _ => Self::NaoSincronismo,
+            _ => Self::NaoSincronizado,
         }
     }
 }
@@ -230,9 +230,19 @@ impl PacoteNtp {
     /// **Pos-condicao:** exatamente [`TAMANHO_DO_PACOTE`] bytes; byte 0 = 0x23
     /// (`LI=0`, `VN=4`, `Mode=3`); todos os demais zero.
     #[must_use]
-    pub const fn de_requisicao() -> [u8; TAMANHO_DO_PACOTE] {
-        // 0b0010_0011 = LI 0 | VN 4 | Mode 3.
-        [0b0010_0011; TAMANHO_DO_PACOTE]
+    pub fn de_requisicao(enviado: SegundosNtp) -> [u8; TAMANHO_DO_PACOTE] {
+        let mut pacote = [0u8; TAMANHO_DO_PACOTE];
+        // 0b0010_0011 = LI 0 | VN 4 | Mode 3. Todo o resto fica zerado, exceto
+        // o carimbo de transmissao (bytes 40..48), que carrega o T1: o servidor
+        // o devolve como carimbo de origem, e e' essa a prova de que a resposta
+        // e' ao *nosso* pedido (ver `decodificar`).
+        if let Some(primeiro) = pacote.first_mut() {
+            *primeiro = 0b0010_0011;
+        }
+        if let Some(destino) = pacote.get_mut(40..48) {
+            destino.copy_from_slice(&enviado.bruto().to_be_bytes());
+        }
+        pacote
     }
 
     /// Decodifica um buffer de resposta.
@@ -322,7 +332,7 @@ mod testes {
 
     #[test]
     fn requisicao_tem_o_modo_de_cliente_nas_versao_4() {
-        let r = PacoteNtp::de_requisicao();
+        let r = PacoteNtp::de_requisicao(SegundosNtp::de_bruto(0));
         exigir!(
             r.len() == TAMANHO_DO_PACOTE,
             "pos-condicao: 48 bytes",

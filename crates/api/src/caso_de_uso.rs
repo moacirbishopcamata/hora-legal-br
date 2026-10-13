@@ -29,11 +29,10 @@ use std::time::Duration;
 
 use hora_legal_dominio::alvo::AlvoDeConsulta;
 use hora_legal_dominio::amostra::AmostraDeTempo;
-use hora_legal_dominio::contrato::ErroDeContrato;
 use hora_legal_dominio::exigir;
 use hora_legal_dominio::instante::InstanteUtc;
 use hora_legal_dominio::politica::PoliticaDeConsulta;
-use hora_legal_dominio::portas::{ErroDeSondagem, FonteDeTempo};
+use hora_legal_dominio::portas::FonteDeTempo;
 use hora_legal_dominio::relogio::Relogio;
 use hora_legal_dominio::resiliencia::{Calibracao, DecisaoDeConsulta};
 

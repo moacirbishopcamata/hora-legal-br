@@ -44,7 +44,6 @@ use hora_legal_dominio::alvo::AlvoDeConsulta;
 use hora_legal_dominio::amostra::{AmostraDeTempo, Estrato, LeiturasBrutas};
 use hora_legal_dominio::contrato::ErroDeContrato;
 use hora_legal_dominio::exigir;
-use hora_legal_dominio::formatos::Formato;
 use hora_legal_dominio::instante::{InstanteUtc, SegundosNtp};
 use hora_legal_dominio::politica::PoliticaDeConsulta;
 use hora_legal_dominio::portas::{ErroDeSondagem as ErroDePorta, FonteDeTempo};
@@ -119,7 +118,7 @@ impl std::error::Error for ErroDeSondagem {}
 ///
 /// Nao expoe os quatro instantes: expoe a `AmostraDeTempo`, que e' o objeto
 /// de dominio. Quem quer os instantes crus usa [`AmostraDeTempo::leituras`] --
-! explicito, e nao por acidente.
+/// explicito, e nao por acidente.
 pub type ResultadoDeSondagem = Result<AmostraDeTempo, ErroDeSondagem>;
 
 /// Fonte NTP: um servidor do Observatorio, com socket, disjuntor e cache.
@@ -152,96 +151,55 @@ impl FonteNtp {
     /// **Pre-condicoes:**
     /// - `alvo` tem endereco e porta validos (garantido pelo tipo);
     /// - `politica` foi validada.
-    pub async fn de_alvo(alvo: AlvoDeConsulta, relogio: Arc<dyn Relogio>) -> Self {
-        let politica = PoliticaDeConsulta::do_perfil(
-            hora_legal_dominio::politica::Perfil::Equilibrado,
-        );
-        Self::de_alvo_com_politica(alvo, relogio, std::sync::Arc::new(politica)).await
+    pub async fn de_alvo(
+        alvo: AlvoDeConsulta,
+        relogio: Arc<dyn Relogio>,
+    ) -> Result<Self, ErroDeSondagem> {
+        let politica = PoliticaDeConsulta::do_perfil(hora_legal_dominio::politica::Perfil::Equilibrado)
+            .map_err(ErroDeSondagem::Contrato)?;
+        Self::de_alvo_com_politica(alvo, relogio, Arc::new(politica)).await
     }
 
     /// Cria a fonte com politica explicita.
     ///
-    /// **Pre-condicoes:** `alvo.nome()` nao vazio; `politica` contem o alvo.
+    /// ## Falha na criacao e' falha alta
+    ///
+    /// Se o socket nao puder ser criado, a fonte **nao existe**: devolve
+    /// `Err` e quem monta o servidor decide (registra e segue com as demais
+    /// fontes). Um socket "de mentira" faria a fonte parecer viva e falhar
+    /// calada em toda sondagem. `connect` em UDP so grava o destino (sem
+    /// rede), entao uma falha ali tambem e' erro de configuracao do alvo.
     pub async fn de_alvo_com_politica(
         alvo: AlvoDeConsulta,
         relogio: Arc<dyn Relogio>,
         politica: Arc<PoliticaDeConsulta>,
-    ) -> Self {
-        // O socket e' criado mesmo se `connect` falhar: `bind` em "0.0.0.0:0"
-        // sempre funciona, e a falha de connect aparece na primeira sondagem,
-        // onde o disjuntor consegue conta-la.
-        let socket = UdpSocket::bind("0.0.0.0:0").await;
-        let socket = match socket {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(alvo = alvo.nome(), erro = %e, "bind UDP falhou");
-                // Sem socket, a fonte passa a falhar sempre -- comportamento
-                // observavel e correto, melhor que um `unwrap` no `main`.
-                Self::invalida(&alvo, relogio, politica)
-            }
-        };
-        let socket = match socket {
-            Ok(s) => {
-                if let Err(e) = s.connect(alvo.endpoint()).await {
-                    tracing::warn!(
-                        alvo = alvo.nome(),
-                        endpoint = alvo.endpoint(),
-                        erro = %e,
-                        "connect UDP falhou; a fonte ficara indisponivel"
-                    );
-                }
-                Arc::new(s)
-            }
-            Err(_) => Self::invalida(&alvo, relogio, politica).socket,
-        };
+    ) -> Result<Self, ErroDeSondagem> {
+        let socket = UdpSocket::bind("0.0.0.0:0")
+            .await
+            .map_err(|e| ErroDeSondagem::Socket(format!("bind: {e}")))?;
+        socket
+            .connect(alvo.endpoint())
+            .await
+            .map_err(|e| ErroDeSondagem::Socket(format!("{}: {e}", alvo.endpoint())))?;
 
-        let endpoint = alvo.endpoint();
-        let espera = espera_para(&politica);
-        let disjuntor = disjuntor_padrao();
+        let endpoint = alvo.endpoint().to_owned();
+        let espera = espera_para(&politica)?;
         // Calibracao inicial: a epoch, desvio zero. Permite que `decidir`
         // responda sem `Option` -- ver `Calibracao` no dominio.
         let calibracao = Calibracao::de_amostra(
             hora_legal_dominio::fixture::amostra_de_teste(),
             relogio.agora(),
         );
-        let resiliente = FonteResiliente::nova(
-            alvo.nome(),
-            espera,
-            disjuntor,
-            calibracao,
-        );
-        Self {
+        let resiliente = FonteResiliente::nova(alvo.nome(), espera, disjuntor_padrao(), calibracao);
+
+        Ok(Self {
             alvo,
             endpoint,
-            socket,
+            socket: Arc::new(socket),
             relogio,
             politica,
             resiliente,
-        }
-    }
-
-    /// Fonte sem socket, que falha sempre. Usada quando o bind falha.
-    fn invalida(
-        alvo: &AlvoDeConsulta,
-        relogio: Arc<dyn Relogio>,
-        politica: Arc<PoliticaDeConsulta>,
-    ) -> Self {
-        Self {
-            alvo: alvo.clone(),
-            endpoint: alvo.endpoint(),
-            socket: Arc::new(socket_efemero()),
-            relogio,
-            politica,
-            resiliente: FonteResiliente::nova(
-                alvo.nome(),
-                espera_para(&politica),
-                disjuntor_padrao(),
-                Calibracao::de_amostra(
-                    hora_legal_dominio::fixture::amostra_de_teste(),
-                    relogio.agora(),
-                ),
-            ),
-        }
+        })
     }
 
     /// Alvo desta fonte.
@@ -252,7 +210,7 @@ impl FonteNtp {
 
     /// Politica que rege a validação das amostras.
     #[must_use]
-    pub const fn politica(&self) -> &PoliticaDeConsulta {
+    pub fn politica(&self) -> &PoliticaDeConsulta {
         &self.politica
     }
 
@@ -287,10 +245,10 @@ impl FonteNtp {
 
         // Invariante I1/I2: T1 derivado de uma unica leitura do relogio.
         let t1 = agora;
-        let enviado = t1
-            .para_segundos_ntp()
-            .map_err(ErroDeSondagem::Contrato)?;
-        let requisicao = PacoteNtp::de_requisicao();
+        let enviado = SegundosNtp::de_bruto(
+            t1.para_segundos_ntp().map_err(ErroDeSondagem::Contrato)?,
+        );
+        let requisicao = PacoteNtp::de_requisicao(enviado);
 
         self.socket
             .send(&requisicao)
@@ -393,46 +351,12 @@ impl FonteDeTempo for FonteNtp {
 pub use hora_legal_dominio::formatos::Formato as FormatoDeHost;
 
 /// Espera da fonte derivada da politica.
-fn espera_para(politica: &PoliticaDeConsulta) -> Espera {
+fn espera_para(politica: &PoliticaDeConsulta) -> Result<Espera, ErroDeSondagem> {
     Espera::nova(
         politica.ajustes().espera_inicial,
         politica.ajustes().espera_maxima,
     )
-    .unwrap_or_else(|_| {
-        Espera::new(Duration::from_millis(1), Duration::from_millis(8))
-            .unwrap_or_else(|_| espera_padrao_inalcancavel())
-    })
-}
-
-/// Ultimo recurso para `Espera`: um par **sempre valido`.
-fn espera_padrao_inalcancavel() -> Espera {
-    // 1ms..2ms satisfaz todas as pre-condicoes de `Espera::nova` sem forma de
-    // falhar; se mesmo assim falhar, o `unwrap` abaixo seria justificavel --
-    // mas preferimos manter o encadeamento sem `unwrap`.
-    Espera::nova(Duration::from_millis(1), Duration::from_millis(2))
-        .unwrap_or_else(|_| unreachable!("1ms..2ms viola pre-condicao de Espera"))
-}
-
-/// Socket efemero para uma fonte sem socket proprio.
-///
-/// Um `UdpSocket` unbound, ligado a porta 0. Existe para que a fonte
-/// *invalida* tenha o mesmo tipo das outras -- sem `Option<FonteNtp>` e sem
-/// `#[cfg]`.
-fn socket_efemero() -> UdpSocket {
-    // `bind` em porta efemera e' a unica operacao sincrona disponivel sem
-    // entrar no runtime; `UdpSocket::bind` sync e' permitido fora de runtime.
-    match UdpSocket::bind(std::net::SocketAddr::from(([0, 0, 0, 0], 0))) {
-        Ok(s) => s,
-        Err(_) => {
-            // Socket inexistente: a fonte falhará em toda sondagem, que e' o
-            // comportamento correto. `new` sem bind e' valido em tokio.
-            UdpSocket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap_or_else(|_| {
-                // ultimo recurso: cria um socket que nunca sera usado com
-                // sucesso porque `connect` apontara para um alvo invalido.
-                std::net::UdpSocket::bind("0.0.0.0:0").unwrap_or_default()
-            }))
-        }
-    }
+    .map_err(ErroDeSondagem::Contrato)
 }
 
 /// Resolve o endereco de um alvo, para diagnostico.

@@ -32,6 +32,7 @@
 pub mod caso_de_uso;
 pub mod dto;
 pub mod erro_http;
+pub mod openapi;
 pub mod rotas;
 
 pub use caso_de_uso::ResultadoDeConsulta;

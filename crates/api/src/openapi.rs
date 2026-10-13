@@ -33,7 +33,6 @@
 
 use std::sync::LazyLock;
 
-use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -42,7 +41,7 @@ use serde_json::{Value, json};
 
 use hora_legal_dominio::formatos::Formato;
 
-use crate::rotas::{CABECALHO_DA_CORRELACAO, CABECALHO_DA_VERSAO, PREFIXO, Estado};
+use crate::rotas::{CABECALHO_DA_CORRELACAO, CABECALHO_DA_VERSAO, Estado};
 
 /// Caminho do documento OpenAPI, relativo a raiz.
 pub const CAMINHO_DO_OPENAPI: &str = "/api/v1/openapi.json";
@@ -80,7 +79,7 @@ static DOCUMENTO: LazyLock<Value> = LazyLock::new(|| {
             { "url": "https://hora-legal.br", "description": "Producao" },
             { "url": "http://localhost:8080", "description": "Local" }
         ],
-        "tags": TAGS,
+        "tags": tags(),
         "paths": caminhos(),
         "components": componentes()
     });
@@ -164,12 +163,14 @@ Use `?formatos=` com qualquer lista destes nomes, ou `?perfis=`
 ///
 /// Ordenadas do mais comum ao menos comum, porque o Swagger UI expande a
 /// primeira: quem abre a documentacao quer a hora, nao a versao do build.
-const TAGS: [Value; 4] = [
-    json!({"name": "hora", "description": "Consulta de hora"}),
-    json!({"name": "fontes", "description": "Saude das fontes de tempo"}),
-    json!({"name": "saude", "description": "Liveness e readiness"}),
-    json!({"name": "meta", "description": "Versao e build"}),
-];
+fn tags() -> Value {
+    json!([
+        {"name": "hora", "description": "Consulta de hora"},
+        {"name": "fontes", "description": "Saude das fontes de tempo"},
+        {"name": "saude", "description": "Liveness e readiness"},
+        {"name": "meta", "description": "Versao e build"},
+    ])
+}
 
 /// Caminhos, status e parametros de cada rota.
 fn caminhos() -> Value {
@@ -395,7 +396,10 @@ fn resposta(
             }
         });
     }
-    json!({ "description": descricao, **blocos })
+    if let Some(objeto) = blocos.as_object_mut() {
+        objeto.insert("description".to_owned(), Value::from(descricao));
+    }
+    blocos
 }
 
 /// Schemas reutilizaveis.
