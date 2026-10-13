@@ -449,7 +449,7 @@ mod testes {
         assert!(valor.is_some_and(|v| v.len() >= 19), "epoch em ns tem 19 digitos");
         // E o valor tem de parsear como inteiro exato.
         let inteiro: u128 = valor.map_or(0, |v| v.parse().unwrap_or(0));
-        assert_eq!(inteiro, 1_791_565_402_212_345_678);
+        assert_eq!(inteiro, 1_791_565_402_123_456_789);
     }
 
     #[test]
@@ -475,7 +475,7 @@ mod testes {
     fn host_windows_traz_filetime_e_numeros() {
         let escala = EscalaDoHost::de_familia(hora_legal_dominio::host::FamiliaDeContagem::CemNanossegundos);
         let resposta = RespostaDeHost::de_instante(ref_in(), escala);
-        assert_eq!(resposta.escala, "file_time");
+        assert_eq!(resposta.escala, "centesimos_de_nanosegundo");
         assert_eq!(resposta.unidades_por_segundo, 10_000_000);
         // `FILETIME` de 2026 tem 18 digitos.
         assert!(resposta.unidades.len() >= 18, "{}", resposta.unidades);
@@ -485,7 +485,7 @@ mod testes {
     fn host_posix_traz_nansegundos() {
         let escala = EscalaDoHost::de_familia(hora_legal_dominio::host::FamiliaDeContagem::Nanossegundos);
         let resposta = RespostaDeHost::de_instante(ref_in(), escala);
-        assert_eq!(resposta.escala, "relogio");
+        assert_eq!(resposta.escala, "nanossegundos");
         assert_eq!(resposta.unidades_por_segundo, 1_000_000_000);
         assert_eq!(resposta.unidades, "1791565402123456789");
     }

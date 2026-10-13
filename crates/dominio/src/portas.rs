@@ -116,6 +116,16 @@ pub trait FonteDeTempo: Send + Sync + std::fmt::Debug {
     /// resposta; esta funcao apenas informa.
     fn decidir(&self, agora: InstanteUtc, janela: Duration) -> DecisaoDeConsulta;
 
+    /// Ultima calibracao **com medicao real**, se houver.
+    ///
+    /// Serve ao modo degradado: quando nenhuma fonte responde, o caso de uso
+    /// ainda pode servir a hora corrigida pela melhor calibracao conhecida,
+    /// dentro do limite de idade. **Pos-condicao:** `Some` implica
+    /// `tem_medida()`; nunca devolve calibracao de preenchimento.
+    fn calibracao_vigente(&self) -> Option<crate::resiliencia::Calibracao> {
+        None
+    }
+
     /// Executa uma sondagem de rede.
     ///
     /// ## Por que `Pin<Box<dyn Future>>` e nao `async fn`

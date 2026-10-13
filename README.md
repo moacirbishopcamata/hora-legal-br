@@ -12,10 +12,22 @@ crates/servidor  binário
 
 ## Estado
 
-**Em construção: `cargo build` ainda falha** (verificado em 2026-10-12). A crate `hora-legal-api` não compila: as variáveis
-`HORA_LEGAL_*` são lidas com `env!` fora da crate que tem o `build.rs`, o módulo `openapi` não está declarado em
-`lib.rs` e os cabeçalhos HTTP passam `&str` onde se espera `HeaderName`. O CI fica vermelho até isso ser corrigido.
-O contrato das rotas abaixo vem do código das rotas e do DTO, **não** de um servidor rodando.
+Verificado em 2026-10-12: `cargo build --workspace` compila e `cargo test --workspace` passa (**163 testes**: 95 de
+domínio, 50 de API, 18 de NTP, incluindo sondagem real contra um servidor NTP de brinquedo no loopback). O servidor ainda
+**não foi exercitado contra o NTP.br de verdade**. Pendências: o `clippy` pedântico do projeto acusa ~40 achados antigos
+(o CI roda clippy sem bloquear até zerá-los) e falta teste de carga/caos.
+
+## Resiliência (contratos)
+
+- **Fonte que não inicia não derruba o serviço**: é registrada e descartada; sem nenhuma fonte, a subida falha alto.
+- **Nada inventado é servido**: uma fonte nova nasce `sem_medida` (`Calibracao::sem_medida`) e só passa a servir cache
+  depois de uma medição real. Antes disso, a decisão é sondar.
+- **Prazo total** por consulta (`prazo_total` da política); estourou, cai no modo degradado.
+- **Modo degradado**: se nenhuma fonte responde, serve a hora corrigida pela melhor calibração **real**, com
+  `degradado: true`, enquanto tiver até 15 min (`IDADE_MAXIMA_DEGRADADA`, escolha de engenharia: ~45 ms de deriva a
+  50 ppm). Mais velha que isso: `503` com `CalibracaoVelha`, nunca hora com boa aparência e sem lastro.
+- **Disjuntor** por fonte e espera com recuo; resposta de NTP é aceita só se espelhar o nosso carimbo T1.
+- **Mutex envenenado não derruba a leitura** (os dados guardados são valores simples, sempre coerentes).
 
 ## Rodar
 

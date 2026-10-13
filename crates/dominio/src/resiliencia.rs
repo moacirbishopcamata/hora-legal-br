@@ -288,6 +288,8 @@ pub struct Calibracao {
     publicada_em: Mutex<InstanteUtc>,
     /// `true` quando a amostra foi rebaixada por perda de fonte.
     degradada: Mutex<bool>,
+    /// `true` so depois de uma medicao **real**. Ver [`Calibracao::sem_medida`].
+    medida: Mutex<bool>,
 }
 
 impl Calibracao {
@@ -301,7 +303,49 @@ impl Calibracao {
             amostra: Mutex::new(amostra),
             publicada_em: Mutex::new(agora),
             degradada: Mutex::new(false),
+            medida: Mutex::new(true),
         }
+    }
+
+    /// Calibracao **sem nenhuma medicao real**: o estado de quem acabou de subir.
+    ///
+    /// ## Por que existe
+    ///
+    /// Servir uma amostra inventada (a de teste, com +5 ms) como se fosse
+    /// calibracao deixaria as primeiras respostas do servico com desvio
+    /// fabricado — e o cliente de um servico de hora legal nao tem como
+    /// perceber. Aqui o estado e' explicito: `tem_medida() == false`.
+    ///
+    /// **Invariantes:**
+    /// - `decidir` nunca devolve `UsarCache` para uma calibracao sem medida;
+    /// - o caso de uso nunca serve, nem degradado, uma calibracao sem medida;
+    /// - `publicar` e' o unico caminho para `tem_medida() == true`.
+    ///
+    /// A amostra interna e' apenas um valor de preenchimento do tipo e **nao
+    /// e' lida** por nenhum caminho de resposta.
+    #[must_use]
+    pub fn sem_medida(agora: InstanteUtc) -> Self {
+        let calibracao = Self::de_amostra(crate::fixture::amostra_de_teste(), agora);
+        *Self::travar(&calibracao.medida) = false;
+        *Self::travar(&calibracao.degradada) = true;
+        calibracao
+    }
+
+    /// Trava o mutex **mesmo envenenado**.
+    ///
+    /// Um `panic!` em outra thread envenena o lock, mas os dados guardados
+    /// aqui sao valores simples (copiaveis), sempre coerentes entre uma
+    /// escrita e outra. Recusar a leitura derrubaria o servico por um problema
+    /// que nao corrompeu nada; recuperar o conteudo e' o comportamento
+    /// resiliente correto.
+    fn travar<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+        mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// `true` se ja houve ao menos uma medicao real.
+    #[must_use]
+    pub fn tem_medida(&self) -> bool {
+        *Self::travar(&self.medida)
     }
 
     /// Publica uma nova amostra.
@@ -319,6 +363,7 @@ impl Calibracao {
         if let Ok(mut g) = self.degradada.lock() {
             *g = false;
         }
+        *Self::travar(&self.medida) = true;
     }
 
     /// Marca a calibracao como degradada (usada quando todas as fontes falham).
@@ -341,26 +386,10 @@ impl Calibracao {
     /// `Option` aqui seria *null* (Yegor256 #1) para um caso que nao ocorre.
     #[must_use]
     pub fn amostra(&self) -> AmostraDeTempo {
-        // Um mutex envenenado significa que um `panic!` ocorreu em outra
-        // thread enquanto segurava o lock. Um caminho de leitura nao pode
-        // derrubar o servico por isso -- mas o silencio nao e' opcao:
-        // `eprintln!` deixa a anomalia **observavel**, que e' o oposto de
-        // "engolir o erro".
-        // `if let` e nao `match`: a variante de erro nao tem nome proprio --
-        // e' apenas "o lock falhou". Um `match` de duas variantes aqui seria
-        // teatro; o `if let` diz em uma linha o que a funcao faz.
-        if let Ok(guarda) = self.amostra.lock() {
-            return *guarda;
-        }
-        // Leitura degradada: nao ha amostra confiavel, mas o servico precisa
-        // responder *algo*. A amostra de reposicao tem desvio zero, que e' a
-        // resposta honesta para "nao sei" -- e o chamador ve `degradado = true`
-        // no resultado.
-        eprintln!("hora-legal: calibracao com mutex envenenado; usando reposicao");
-        crate::fixture::amostra_de_teste()
+        *Self::travar(&self.amostra)
     }
 
-    /// Momento da ultima publicacao.
+    /// Instante da ultima publicacao (ou da criacao, se nunca houve).
     #[must_use]
     pub fn publicada_em(&self) -> InstanteUtc {
         match self.publicada_em.lock() {
@@ -390,9 +419,18 @@ impl Clone for Calibracao {
             amostra: Mutex::new(self.amostra()),
             publicada_em: Mutex::new(self.publicada_em()),
             degradada: Mutex::new(self.esta_degradada()),
+            medida: Mutex::new(self.tem_medida()),
         }
     }
 }
+
+/// Idade maxima de uma calibracao para ser servida **em modo degradado**.
+///
+/// Escolha de engenharia, nao norma: um oscilador de quartzo comum deriva da
+/// ordem de 50 ppm, o que da ~45 ms em 15 minutos. Passado isso, a hora
+/// corrigida deixa de merecer o nome de hora legal e o servico prefere
+/// responder `503` a mentir com boa aparencia.
+pub const IDADE_MAXIMA_DEGRADADA: Duration = Duration::from_secs(15 * 60);
 
 /// Reune os tres mecanismos para uma fonte.
 ///
@@ -466,7 +504,7 @@ impl FonteResiliente {
             EstadoDoDisjuntor::Aberto { .. } => DecisaoDeConsulta::FonteIndisponivel {
                 calibra_em: self.calibracao.publicada_em(),
             },
-            _ if dentro_da_janela && !self.calibracao.esta_degradada() => DecisaoDeConsulta::UsarCache {
+            _ if dentro_da_janela && self.calibracao.tem_medida() && !self.calibracao.esta_degradada() => DecisaoDeConsulta::UsarCache {
                 calibracao: self.calibracao.clone(),
             },
             _ => DecisaoDeConsulta::Sondar {

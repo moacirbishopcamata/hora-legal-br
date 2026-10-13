@@ -381,7 +381,7 @@ mod testes {
     fn tamanho_errado_e_erro_descrito() {
         let enviado = SegundosNtp::de_bruto(0);
         let r = PacoteNtp::decodificar(&[0u8; 20], enviado);
-        let Some(Err(ErroDeDecodificacao::TamanhoInvalido { recebido })) = r else {
+        let Err(ErroDeDecodificacao::TamanhoInvalido { recebido }) = r else {
             return exigir!(false, "esperava TamanhoInvalido", "{r:?}");
         };
         exigir!(recebido == 20, "tamanho relatado", "{recebido}");

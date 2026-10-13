@@ -590,6 +590,7 @@ use std::sync::Arc;
 #[cfg(test)]
 mod testes {
     use super::*;
+    use crate::rotas::PREFIXO;
 
     /// O documento tem de ser um JSON com as tres chaves que o Swagger UI exige.
     ///
@@ -656,8 +657,9 @@ mod testes {
     fn contagens_grandes_sao_strings_no_schema() {
         let hora = &documento()["components"]["schemas"]["Hora"]["properties"];
         for campo in ["formatos"] {
+            assert_eq!(hora[campo]["type"], "object", "`{campo}` deveria ser um mapa");
             assert_eq!(
-                hora[campo]["type"], "string",
+                hora[campo]["additionalProperties"]["type"], "string",
                 "`{campo}` deveria ser objeto de strings"
             );
         }
@@ -761,9 +763,8 @@ mod testes {
     /// devolver a mesma instancia, nao duas iguais.
     #[test]
     fn documento_e_calculado_uma_vez() {
-        assert_eq!(
-            documento().as_ptr(),
-            documento().as_ptr(),
+        assert!(
+            std::ptr::eq(documento(), documento()),
             "o documento deve ser calculado uma unica vez"
         );
     }

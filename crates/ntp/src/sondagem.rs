@@ -186,10 +186,7 @@ impl FonteNtp {
         let espera = espera_para(&politica)?;
         // Calibracao inicial: a epoch, desvio zero. Permite que `decidir`
         // responda sem `Option` -- ver `Calibracao` no dominio.
-        let calibracao = Calibracao::de_amostra(
-            hora_legal_dominio::fixture::amostra_de_teste(),
-            relogio.agora(),
-        );
+        let calibracao = Calibracao::sem_medida(relogio.agora());
         let resiliente = FonteResiliente::nova(alvo.nome(), espera, disjuntor_padrao(), calibracao);
 
         Ok(Self {
@@ -313,6 +310,11 @@ impl FonteDeTempo for FonteNtp {
         self.resiliente.decidir(agora, janela)
     }
 
+    fn calibracao_vigente(&self) -> Option<Calibracao> {
+        let calibracao = self.resiliente.calibracao();
+        calibracao.tem_medida().then(|| calibracao.clone())
+    }
+
     /// Sondagem que publica a calibracao em caso de sucesso.
     ///
     /// ## Por que publica aqui e nao no caso de uso
@@ -373,75 +375,176 @@ pub async fn resolver(alvo: &AlvoDeConsulta) -> Result<SocketAddr, ErroDeSondage
 #[cfg(test)]
 mod testes {
     use super::*;
-    use std::net::SocketAddr;
+    use hora_legal_dominio::relogio::RelogioDoSistema;
+    use hora_legal_dominio::resiliencia::Calibracao;
 
-    async fn fonte_de_teste() -> FonteNtp {
-        let relogio: Arc<dyn Relogio> = Arc::new(hora_legal_dominio::relogio::RelogioDoSistema::new());
-        let alvo = AlvoDeConsulta::na_porta_ntp("teste", "127.0.0.1").unwrap_or_default();
-        FonteNtp::de_alvo(alvo, relogio).await
+    fn relogio() -> Arc<dyn Relogio> {
+        Arc::new(RelogioDoSistema::novo())
+    }
+
+    fn politica() -> Arc<PoliticaDeConsulta> {
+        Arc::new(hora_legal_dominio::fixture::politica_de_teste())
+    }
+
+    async fn fonte_para(endereco: &str, porta: u16) -> FonteNtp {
+        let alvo = AlvoDeConsulta::novo("teste", endereco, porta).expect("alvo de teste valido");
+        FonteNtp::de_alvo_com_politica(alvo, relogio(), politica())
+            .await
+            .expect("fonte de teste")
+    }
+
+    /// Servidor NTP de brinquedo no loopback: responde ao pedido espelhando o
+    /// carimbo de transmissao do cliente como origem (a prova que o decodificador
+    /// exige) e carimbando T2/T3 com o relogio do sistema.
+    async fn servidor_ntp(estrato: u8) -> u16 {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.expect("bind do servidor");
+        let porta = socket.local_addr().expect("endereco local").port();
+
+        tokio::spawn(async move {
+            let mut buf = [0u8; TAMANHO_DO_PACOTE];
+            while let Ok((n, origem)) = socket.recv_from(&mut buf).await {
+                if n != TAMANHO_DO_PACOTE {
+                    continue;
+                }
+                let agora = RelogioDoSistema::novo().agora();
+                let Ok(bruto) = agora.para_segundos_ntp() else { continue };
+                let mut resposta = [0u8; TAMANHO_DO_PACOTE];
+                resposta[0] = 0b0010_0100; // LI 0 | VN 4 | Mode 4 (servidor)
+                resposta[1] = estrato;
+                resposta[24..32].copy_from_slice(&buf[40..48]); // origem = T1 do cliente
+                resposta[32..40].copy_from_slice(&bruto.to_be_bytes()); // recepcao (T2)
+                resposta[40..48].copy_from_slice(&bruto.to_be_bytes()); // transmissao (T3)
+                let _ = socket.send_to(&resposta, origem).await;
+            }
+        });
+
+        porta
     }
 
     #[tokio::test]
-    async fn sondar_para_endereco_sem_resposta_da_erro_de_prazo() {
-        // Porta descartavel: nada escuta, entao o prazo estoura. Nao e' flaky
-        // porque o `timeout` do runtime garante o resultado.
-        let relogio: Arc<dyn Relogio> = Arc::new(hora_legal_dominio::relogio::RelogioDoSistema::new());
-        let alvo = AlvoDeConsulta::novo("buraco", "127.0.0.1", 9).unwrap_or_default();
-        let fonte = FonteNtp::de_alvo(alvo, relogio).await;
-        let r = fonte.sondar(InstanteUtc::epoch()).await;
+    async fn sondagem_de_ponta_a_ponta_contra_servidor_local() {
+        let porta = servidor_ntp(1).await;
+        let fonte = fonte_para("127.0.0.1", porta).await;
+        let agora = fonte.relogio.agora();
+
+        let amostra = fonte.sondar(agora).await;
+
+        assert!(amostra.is_ok(), "servidor local deve responder: {amostra:?}");
+    }
+
+    #[tokio::test]
+    async fn sem_resposta_estoura_o_prazo_e_nao_trava() {
+        // Socket que recebe e nunca responde.
+        let mudo = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
+        let porta = mudo.local_addr().expect("endereco").port();
+        let fonte = fonte_para("127.0.0.1", porta).await;
+        let agora = fonte.relogio.agora();
+
+        let r = fonte.sondar_com_prazo(Duration::from_millis(50), agora).await;
+
+        assert!(matches!(r, Err(ErroDeSondagem::TempoEsgotado { .. })), "veio {r:?}");
+    }
+
+    #[tokio::test]
+    async fn resposta_que_nao_e_ao_nosso_pedido_e_recusada() {
+        // Servidor que responde com origem errada (resposta forjada ou atrasada).
+        let socket = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
+        let porta = socket.local_addr().expect("endereco").port();
+        tokio::spawn(async move {
+            let mut buf = [0u8; TAMANHO_DO_PACOTE];
+            while let Ok((_, origem)) = socket.recv_from(&mut buf).await {
+                let mut resposta = [0u8; TAMANHO_DO_PACOTE];
+                resposta[0] = 0b0010_0100;
+                resposta[1] = 1;
+                resposta[24..32].copy_from_slice(&[9u8; 8]);
+                let _ = socket.send_to(&resposta, origem).await;
+            }
+        });
+        let fonte = fonte_para("127.0.0.1", porta).await;
+        let agora = fonte.relogio.agora();
+
+        let r = fonte.sondar(agora).await;
+
+        assert!(matches!(r, Err(ErroDeSondagem::Pacote(_))), "veio {r:?}");
+    }
+
+    #[tokio::test]
+    async fn fonte_nova_nasce_sem_medida_e_nunca_serve_cache_inventado() {
+        let porta = servidor_ntp(1).await;
+        let fonte = fonte_para("127.0.0.1", porta).await;
+        let agora = fonte.relogio.agora();
+
+        assert!(fonte.calibracao_vigente().is_none(), "sem medicao real nao ha calibracao a servir");
         assert!(
-            matches!(r, Err(ErroDeSondagem::TempoEsgotado { .. }) | Err(ErroDeSondagem::Envio(_))),
-            "sondagem sem resposta deve falhar com prazo ou envio, veio {r:?}"
+            matches!(fonte.decidir(agora, Duration::from_secs(3600)), DecisaoDeConsulta::Sondar { .. }),
+            "sem medida, a unica decisao possivel e' sondar"
         );
     }
 
     #[tokio::test]
-    async fn falha_incrementa_o_disjuntor() {
-        let fonte = fonte_de_teste().await;
-        let antes = fonte.resiliente().disjuntor().falhas();
-        let _ = fonte.sondar(InstanteUtc::epoch()).await;
-        let depois = fonte.resiliente().disjuntor().falhas();
-        assert!(depois > antes, "falha de sondagem alimenta o disjuntor");
+    async fn sucesso_publica_calibracao_real() {
+        let porta = servidor_ntp(1).await;
+        let fonte = fonte_para("127.0.0.1", porta).await;
+        let agora = fonte.relogio.agora();
+
+        let r = <FonteNtp as FonteDeTempo>::sondar(&fonte, agora).await;
+
+        assert!(r.is_ok(), "{r:?}");
+        let calibracao: Calibracao = fonte.calibracao_vigente().expect("calibracao apos sucesso");
+        assert!(calibracao.tem_medida());
     }
 
     #[tokio::test]
-    async fn resolve_endereco_local() {
-        let alvo = AlvoDeConsulta::na_porta_ntp("localhost", "127.0.0.1").unwrap_or_default();
-        match resolver(&alvo).await {
-            Ok(addr) => assert!(addr.port() == 123),
-            Err(e) => panic!("localhost:123 deveria resolver: {e}"),
+    async fn falhas_repetidas_abrem_o_disjuntor() {
+        let mudo = UdpSocket::bind("127.0.0.1:0").await.expect("bind");
+        let porta = mudo.local_addr().expect("endereco").port();
+        let fonte = fonte_para("127.0.0.1", porta).await;
+        let antes = fonte.resiliente().disjuntor().falhas();
+
+        for _ in 0..3 {
+            let agora = fonte.relogio.agora();
+            let _ = fonte.resiliente().disjuntor().permitir_tentativa(agora);
+            fonte.resiliente().disjuntor().registrar_falha(agora);
+        }
+
+        assert!(fonte.resiliente().disjuntor().falhas() >= antes + 3);
+        let agora = fonte.relogio.agora();
+        assert!(
+            matches!(
+                fonte.decidir(agora, Duration::from_secs(1)),
+                DecisaoDeConsulta::FonteIndisponivel { .. }
+            ),
+            "tres falhas seguidas abrem o disjuntor: a fonte nao e' consultada de novo de imediato"
+        );
+    }
+
+    #[tokio::test]
+    async fn endereco_invalido_e_erro_na_criacao_nao_fonte_fantasma() {
+        let alvo = AlvoDeConsulta::novo("ruim", "nao e um endereco", 123);
+        // O proprio alvo ja recusa (contrato do dominio); se aceitar, o connect recusa.
+        if let Ok(alvo) = alvo {
+            let r = FonteNtp::de_alvo_com_politica(alvo, relogio(), politica()).await;
+            assert!(r.is_err());
         }
     }
 
     #[test]
     fn erro_de_sondagem_tem_mensagem_util() {
         let e = ErroDeSondagem::TempoEsgotado { prazo: Duration::from_millis(150) };
-        let msg = e.to_string();
-        assert!(msg.contains("150"), "mensagem deve conter o prazo: {msg}");
+        assert!(e.to_string().contains("150"), "mensagem deve conter o prazo: {e}");
     }
 
     #[test]
-    fn espera_derivada_da_politica_e_valida() {
-        let politica = hora_legal_dominio::politica::PoliticaDeConsulta::do_perfil(
-            hora_legal_dominio::Perfil::Equilibrado,
-        )
-        .unwrap_or_default();
-        let e = espera_para(&politica);
-        // Pos-condicao: nunca excede o teto da politica.
-        let s = hora_legal_dominio::SorteioFixo::novo(1.0);
+    fn espera_derivada_da_politica_respeita_o_teto() {
+        let politica = hora_legal_dominio::fixture::politica_de_teste();
+        let espera = espera_para(&politica).expect("politica de teste e' valida");
+        let sorteio = hora_legal_dominio::SorteioFixo::novo(1.0);
+
         for n in 0..5 {
             assert!(
-                e.esperar(n, &s) <= politica.ajustes().espera_maxima,
+                espera.esperar(n, &sorteio) <= politica.ajustes().espera_maxima,
                 "espera {n} excedeu o teto da politica"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn fonte_expoe_o_nome_do_alvo() {
-        let f = fonte_de_teste().await;
-        assert_eq!(f.alvo().nome(), "teste");
-        assert_eq!(f.alvo().porta(), 123);
-        let _ = SocketAddr::from(([0, 0, 0, 0], 0));
     }
 }
